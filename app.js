@@ -2,10 +2,10 @@
 // CONFIGURATION
 // ============================================
 const defaultConfig = {
-  background_color: "#0a1124",
-  surface_color: "rgba(14,20,38,0.9)",
-  text_color: "#e8ecf6",
-  primary_action_color: "#3b82f6",
+  background_color: "#0b0f1f",
+  surface_color: "rgba(18,16,45,0.9)",
+  text_color: "#eef1ff",
+  primary_action_color: "#8b5cf6",
   secondary_action_color: "#64748b",
   font_family: "Poppins",
   font_size: 17,
@@ -16,12 +16,9 @@ const defaultConfig = {
 
 // ============================================
 // STATE + FALLBACK STORAGE
-
-const TELEGRAM_ENDPOINT = '/api/telegram'; // serverless endpoint (Vercel)
-
 // ============================================
 let currentRecordCount = 0;
-let activeFolder = "SEMUA"; // filter folder aktif
+let activeFolder = "SEMUA"; // filter folder aktif (SEMUA atau 'A','B',...)
 const LS_KEY = "pengajuan_izin_records_v1";
 
 function loadLocal() {
@@ -30,6 +27,11 @@ function loadLocal() {
 function saveLocal(arr) {
   localStorage.setItem(LS_KEY, JSON.stringify(arr));
 }
+
+// ============================================
+// TELEGRAM ENDPOINT (optional override)
+// ============================================
+const TELEGRAM_ENDPOINT = '/api/telegram'; // serverless endpoint (Vercel) - can be overridden by window.TELEGRAM_ENDPOINT_OVERRIDE
 
 // ============================================
 // DATA SDK HANDLER (opsional)
@@ -138,21 +140,34 @@ function validateFile(file, maxMB = 5, allowed = []) {
   return okSize && okType;
 }
 
-// ====== Folder (Grouping) ======
-function monthKeyFromISO(iso) {
-  // "2025-11-10T..." -> "2025-11"
-  return (iso || new Date().toISOString()).slice(0, 7);
+// ============================================
+// FOLDER (Grouping) - NEW: group by first letter of nama_lengkap
+// ============================================
+function firstLetterKey(name) {
+  if (!name) return "#";
+  // normalize: trim, uppercase first letter, fallback to '#'
+  const n = String(name).trim();
+  if (!n) return "#";
+  const ch = n[0].toUpperCase();
+  // keep only A-Z and common locale letters; others go to '#'
+  if (/[A-ZÀ-ÖØ-Þ]/i.test(ch)) return ch;
+  return "#";
 }
 
-function groupByMonth(data) {
+function groupByAlpha(data) {
   const map = new Map();
   for (const r of data) {
-    const key = monthKeyFromISO(r.tanggal_pengajuan);
+    const key = firstLetterKey(r.nama_lengkap);
     if (!map.has(key)) map.set(key, []);
     map.get(key).push(r);
   }
-  // urutkan terbaru dulu
-  return new Map([...map.entries()].sort((a, b) => b[0].localeCompare(a[0])));
+  // Sort entries by key (A-Z), keep '#' at the end
+  const entries = [...map.entries()].sort((a, b) => {
+    if (a[0] === "#") return 1;
+    if (b[0] === "#") return -1;
+    return a[0].localeCompare(b[0], 'id');
+  });
+  return new Map(entries);
 }
 
 function renderFolders(data) {
@@ -164,7 +179,7 @@ function renderFolders(data) {
     return;
   }
 
-  const groups = groupByMonth(data);
+  const groups = groupByAlpha(data);
   const total = data.length;
 
   const tile = (label, count, active) => `
@@ -180,7 +195,10 @@ function renderFolders(data) {
     </button>
   `;
 
+  // SEMUA tile first
   let html = tile("SEMUA", total, activeFolder === "SEMUA");
+
+  // Iterate groups in alphabetical order (A→Z)
   for (const [key, arr] of groups.entries()) {
     html += tile(key, arr.length, activeFolder === key);
   }
@@ -191,12 +209,14 @@ function renderFolders(data) {
     btn.addEventListener("click", () => {
       activeFolder = btn.getAttribute("data-folder");
       renderFolders(data); // re-render highlight aktif
-      // filter
+
+      // filter: show all or those whose first letter matches
       const filtered = activeFolder === "SEMUA"
         ? data
-        : data.filter(r => monthKeyFromISO(r.tanggal_pengajuan) === activeFolder);
+        : data.filter(r => firstLetterKey(r.nama_lengkap) === activeFolder);
+
       renderSubmissions(filtered);
-      showSubmissionsCard(activeFolder);
+      showSubmissionsCard(activeFolder); // reveal submissions card when folder selected
     });
   });
 }
@@ -236,7 +256,7 @@ function renderSubmissions(data) {
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm mb-4 bg-gray-50 p-4 rounded-lg">
         <div>
           <span class="font-semibold block mb-1">📍 Tempat, Tanggal Lahir:</span>
-          <p>${submission.tempat_lahir}, ${new Date(submission.tanggal_lahir).toLocaleDateString("id-ID")}</p>
+          <p>${submission.tempat_lahir}, ${submission.tanggal_lahir ? new Date(submission.tanggal_lahir).toLocaleDateString("id-ID") : ""}</p>
         </div>
         <div>
           <span class="font-semibold block mb-1">📞 Kontak:</span>
@@ -258,16 +278,16 @@ function renderSubmissions(data) {
       <div class="flex flex-wrap items-center gap-3 mt-2">
         ${submission.foto_ktp_url ? `
           <button class="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-sm"
-                  data-viewer='{"type":"auto","title":"Foto KTP - ${submission.nama_lengkap}","src":"${submission.foto_ktp_url.replaceAll('"','&quot;')}"}'>
+                  data-viewer='{"type":"auto","title":"Foto KTP - ${submission.nama_lengkap}","src":"${(submission.foto_ktp_url||"").replaceAll('"','&quot;')}"}'>
             Lihat Foto KTP
           </button>` : ``}
         ${submission.surat_keterangan_url ? `
           <button class="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-sm"
-                  data-viewer='{"type":"auto","title":"Surat Keterangan - ${submission.nama_lengkap}","src":"${submission.surat_keterangan_url.replaceAll('"','&quot;')}"}'>
+                  data-viewer='{"type":"auto","title":"Surat Keterangan - ${submission.nama_lengkap}","src":"${(submission.surat_keterangan_url||"").replaceAll('"','&quot;')}"}'>
             Lihat Surat
           </button>` : ``}
         <span class="text-xs text-gray-500 ml-auto">
-          Dikirim: ${new Date(submission.tanggal_pengajuan).toLocaleString("id-ID")}
+          Dikirim: ${submission.tanggal_pengajuan ? new Date(submission.tanggal_pengajuan).toLocaleString("id-ID") : ""}
         </span>
       </div>
     </div>
@@ -286,6 +306,119 @@ function renderSubmissions(data) {
     });
   });
 }
+
+// ============================================
+// VIEWER UTILITIES (assumes openViewer/closeViewer exist in styles or earlier scripts)
+// ============================================
+function isDataURL(str) {
+  return typeof str === "string" && /^data:/.test(str);
+}
+function getMimeFromDataURL(dataURL) {
+  const m = dataURL.match(/^data:([^;]+);/);
+  return m ? m[1] : "";
+}
+async function dataURLToObjectURL(dataURL) {
+  const res = await fetch(dataURL);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  return url;
+}
+async function openViewer(src, title = "Pratinjau Dokumen", forceType = "auto") {
+  const backdrop = document.getElementById("viewer-backdrop");
+  const modal = document.getElementById("viewer-modal");
+  const body = document.getElementById("viewer-body");
+  const titleEl = document.getElementById("viewer-title");
+  const listCard = document.getElementById("submissions-card");
+
+  // Bersihkan konten sebelumnya
+  body.innerHTML = "";
+  let currentObjectURL = null;
+
+  let viewType = forceType;
+  let viewSrc = src;
+
+  try {
+    if (isDataURL(src)) {
+      const mime = getMimeFromDataURL(src);
+      if (viewType === "auto") {
+        if (mime.includes("pdf")) viewType = "pdf";
+        else if (mime.startsWith("image/")) viewType = "image";
+        else viewType = "download";
+      }
+      viewSrc = await dataURLToObjectURL(src);
+      currentObjectURL = viewSrc;
+    } else {
+      if (viewType === "auto") {
+        if (/\.(pdf)(\?|#|$)/i.test(src)) viewType = "pdf";
+        else if (/\.(png|jpe?g|webp|gif|bmp|svg)(\?|#|$)/i.test(src)) viewType = "image";
+        else viewType = "download";
+      }
+    }
+
+    if (viewType === "image") {
+      const img = document.createElement("img");
+      img.src = viewSrc;
+      img.alt = title;
+      img.className = "w-full h-full object-contain";
+      body.appendChild(img);
+    } else if (viewType === "pdf") {
+      const iframe = document.createElement("iframe");
+      iframe.src = viewSrc;
+      iframe.title = title;
+      iframe.className = "w-full h-full";
+      iframe.setAttribute("loading", "eager");
+      body.appendChild(iframe);
+    } else {
+      const wrap = document.createElement("div");
+      wrap.className = "w-full h-full flex items-center justify-center";
+      wrap.innerHTML = `
+        <a href="${viewSrc}" download class="px-4 py-2 rounded-lg bg-indigo-600 text-white">Unduh Dokumen</a>
+      `;
+      body.appendChild(wrap);
+    }
+
+    titleEl.textContent = title;
+    backdrop.classList.remove("hidden");
+    modal.classList.remove("hidden");
+    document.body.style.overflow = "hidden";
+    if (listCard) listCard.classList.add("hidden");
+
+    const close = () => {
+      backdrop.classList.add("hidden");
+      modal.classList.add("hidden");
+      document.body.style.overflow = "";
+      if (listCard) listCard.classList.remove("hidden");
+      body.innerHTML = "";
+      if (currentObjectURL) {
+        URL.revokeObjectURL(currentObjectURL);
+        currentObjectURL = null;
+      }
+      window.removeEventListener("keydown", onEscClose);
+    };
+    document.getElementById("viewer-close").onclick = close;
+    backdrop.onclick = close;
+    window.addEventListener("keydown", onEscClose);
+  } catch (err) {
+    console.error(err);
+    showToast("Tidak dapat menampilkan dokumen.", "error");
+  }
+}
+function onEscClose(e) {
+  if (e.key === "Escape") {
+    const backdrop = document.getElementById("viewer-backdrop");
+    const modal = document.getElementById("viewer-modal");
+    if (backdrop && !backdrop.classList.contains("hidden")) {
+      backdrop.classList.add("hidden");
+      modal.classList.add("hidden");
+      document.body.style.overflow = "";
+      const body = document.getElementById("viewer-body");
+      if (body) body.innerHTML = "";
+      if (document.getElementById("submissions-card")) document.getElementById("submissions-card").classList.remove("hidden");
+      window.removeEventListener("keydown", onEscClose);
+    }
+  }
+}
+
 // ============================================
 // INIT OPTIONS (Tanggal/Bulan/Tahun)
 // ============================================
@@ -293,6 +426,8 @@ function populateDateSelectors() {
   const tanggal = document.getElementById("tanggal");
   const bulan = document.getElementById("bulan");
   const tahun = document.getElementById("tahun");
+
+  if (!tanggal || !bulan || !tahun) return;
 
   // tanggal 1..31
   for (let d = 1; d <= 31; d++) {
@@ -343,47 +478,51 @@ function setupFilePreviews() {
   const suratPreview = document.getElementById("surat-preview");
   const suratImage = document.getElementById("surat-image");
 
-  ktpInput.addEventListener("change", async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  if (ktpInput) {
+    ktpInput.addEventListener("change", async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
 
-    if (!validateFile(file, 5, ["image"])) {
-      showToast("File KTP terlalu besar atau tipe tidak sesuai.", "error");
-      ktpInput.value = "";
-      ktpPreview.classList.add("hidden");
-      return;
-    }
+      if (!validateFile(file, 5, ["image"])) {
+        showToast("File KTP terlalu besar atau tipe tidak sesuai.", "error");
+        ktpInput.value = "";
+        ktpPreview.classList.add("hidden");
+        return;
+      }
 
-    const url = await fileToDataURL(file);
-    ktpImage.src = url;
-    ktpPreview.querySelector("p").textContent = `Terunggah: ${file.name}`;
-    ktpPreview.classList.remove("hidden");
-  });
-
-  suratInput.addEventListener("change", async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const isOK = validateFile(file, 5, ["image", "pdf"]);
-    if (!isOK) {
-      showToast("File Surat terlalu besar atau tipe tidak sesuai.", "error");
-      suratInput.value = "";
-      suratPreview.classList.add("hidden");
-      return;
-    }
-
-    if (file.type.includes("image")) {
       const url = await fileToDataURL(file);
-      suratImage.src = url;
-      suratPreview.querySelector("p").textContent = `Terunggah: ${file.name}`;
-      suratImage.classList.remove("hidden");
-    } else {
-      suratImage.src = "";
-      suratImage.classList.add("hidden");
-      suratPreview.querySelector("p").textContent = `Terunggah: ${file.name} (PDF)`;
-    }
-    suratPreview.classList.remove("hidden");
-  });
+      ktpImage.src = url;
+      ktpPreview.querySelector("p").textContent = `Terunggah: ${file.name}`;
+      ktpPreview.classList.remove("hidden");
+    });
+  }
+
+  if (suratInput) {
+    suratInput.addEventListener("change", async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      const isOK = validateFile(file, 5, ["image", "pdf"]);
+      if (!isOK) {
+        showToast("File Surat terlalu besar atau tipe tidak sesuai.", "error");
+        suratInput.value = "";
+        suratPreview.classList.add("hidden");
+        return;
+      }
+
+      if (file.type.includes("image")) {
+        const url = await fileToDataURL(file);
+        suratImage.src = url;
+        suratPreview.querySelector("p").textContent = `Terunggah: ${file.name}`;
+        suratImage.classList.remove("hidden");
+      } else {
+        suratImage.src = "";
+        suratImage.classList.add("hidden");
+        suratPreview.querySelector("p").textContent = `Terunggah: ${file.name} (PDF)`;
+      }
+      suratPreview.classList.remove("hidden");
+    });
+  }
 }
 
 // ============================================
@@ -394,8 +533,8 @@ async function onSubmit(e) {
 
   const btn = document.getElementById("submit-btn");
   const spinner = document.getElementById("submit-spinner");
-  btn.disabled = true;
-  spinner.classList.remove("hidden");
+  if (btn) btn.disabled = true;
+  if (spinner) spinner.classList.remove("hidden");
 
   try {
     const form = e.currentTarget;
@@ -427,7 +566,6 @@ async function onSubmit(e) {
       return;
     }
 
-    // Untuk demo: simpan sebagai dataURL (di produksi sebaiknya upload ke storage dan simpan URL)
     const foto_ktp_url = await fileToDataURL(ktpFile);
     const surat_keterangan_url = await fileToDataURL(suratFile);
 
@@ -453,7 +591,6 @@ async function onSubmit(e) {
         await window.dataSdk.create(record);
         savedVia = "sdk";
       } catch (sdkErr) {
-        // Fallback local walaupun SDK ada
         const list = loadLocal();
         list.push(record);
         saveLocal(list);
@@ -486,30 +623,45 @@ async function onSubmit(e) {
 
     showToast(savedVia === "sdk" ? "Pengajuan berhasil dikirim (SDK)." : "Pengajuan berhasil disimpan (local).");
 
-    // === Send to Telegram endpoint (best-effort, no UI change) ===
-try {
-  // send without blocking UI; do not throw visible errors to user
-  (async () => {
-    await fetch((window.TELEGRAM_ENDPOINT_OVERRIDE) || TELEGRAM_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(record)
-    });
-  })();
-} catch (tgErr) {
-  console.warn("Telegram notify failed:", tgErr);
-}
+    // Kirim ke Telegram endpoint (best-effort, no UI change)
+    try {
+      (async () => {
+        await fetch((window.TELEGRAM_ENDPOINT_OVERRIDE) || TELEGRAM_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(record)
+        });
+      })();
+    } catch (tgErr) {
+      console.warn("Telegram notify failed:", tgErr);
+    }
 
-// Reset form & preview
+    // Reset form & preview
     form.reset();
-    document.getElementById("ktp-preview").classList.add("hidden");
-    document.getElementById("surat-preview").classList.add("hidden");
+    const ktpPrev = document.getElementById("ktp-preview");
+    const suratPrev = document.getElementById("surat-preview");
+    if (ktpPrev) ktpPrev.classList.add("hidden");
+    if (suratPrev) suratPrev.classList.add("hidden");
   } catch (err) {
     console.error(err);
     showToast("Terjadi kesalahan saat mengirim pengajuan.", "error");
   } finally {
-    btn.disabled = false;
-    spinner.classList.add("hidden");
+    if (btn) btn.disabled = false;
+    if (spinner) spinner.classList.add("hidden");
+  }
+}
+
+// ============================================
+// SHOW SUBMISSIONS CARD HELPER
+// ============================================
+function showSubmissionsCard(folderLabel = "") {
+  const card = document.getElementById("submissions-card");
+  if (card) card.classList.remove("hidden");
+  const heading = card ? card.querySelector("h2.section-header") : null;
+  if (heading) {
+    heading.textContent = folderLabel && folderLabel !== "SEMUA"
+      ? `📊 Daftar Pengajuan — ${folderLabel}`
+      : "📊 Daftar Pengajuan";
   }
 }
 
@@ -521,14 +673,14 @@ function bootstrap() {
   setupFilePreviews();
 
   const form = document.getElementById("submission-form");
-  form.addEventListener("submit", onSubmit);
+  if (form) form.addEventListener("submit", onSubmit);
 
   // Inisialisasi tampilan awal dari local (agar tidak blank)
   const existing = loadLocal();
   renderFolders(existing);
   renderSubmissions(existing);
 
-  // Mulai tersembunyi sampai folder dipilih
+  // Keep submissions hidden until folder chosen (if the DOM had been set that way)
   try { document.getElementById('submissions-card').classList.add('hidden'); } catch {}
 
   // Apply default config
@@ -564,164 +716,3 @@ function bootstrap() {
 }
 
 document.addEventListener("DOMContentLoaded", bootstrap);
-
-
-// ===== Viewer Utilities (moved from styles.css) =====
-// ===== Viewer Utilities =====
-let currentObjectURL = null;
-
-function isDataURL(str) {
-  return typeof str === "string" && /^data:/.test(str);
-}
-function getMimeFromDataURL(dataURL) {
-  const m = dataURL.match(/^data:([^;]+);/);
-  return m ? m[1] : "";
-}
-async function dataURLToObjectURL(dataURL) {
-  // Konversi dataURL -> Blob URL (lebih ringan untuk iframe/img)
-  const res = await fetch(dataURL);
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  return url;
-}
-
-async function openViewer(src, title = "Pratinjau Dokumen", forceType = "auto") {
-  const backdrop = document.getElementById("viewer-backdrop");
-  const modal = document.getElementById("viewer-modal");
-  const body = document.getElementById("viewer-body");
-  const titleEl = document.getElementById("viewer-title");
-  const listCard = document.getElementById("submissions-card");
-
-  // Bersihkan konten sebelumnya
-  body.innerHTML = "";
-  if (currentObjectURL) {
-    URL.revokeObjectURL(currentObjectURL);
-    currentObjectURL = null;
-  }
-
-  let viewType = forceType;
-  let viewSrc = src;
-
-  try {
-    // Deteksi mime (kalau dataURL)
-    if (isDataURL(src)) {
-      const mime = getMimeFromDataURL(src);
-      if (viewType === "auto") {
-        if (mime.includes("pdf")) viewType = "pdf";
-        else if (mime.startsWith("image/")) viewType = "image";
-        else viewType = "download";
-      }
-      // Selalu pakai Blob URL untuk stabilitas
-      viewSrc = await dataURLToObjectURL(src);
-      currentObjectURL = viewSrc;
-    } else {
-      // src adalah URL biasa → coba tebak dari ekstensi
-      if (viewType === "auto") {
-        if (/\.(pdf)(\?|#|$)/i.test(src)) viewType = "pdf";
-        else if (/\.(png|jpe?g|webp|gif|bmp|svg)(\?|#|$)/i.test(src)) viewType = "image";
-        else viewType = "download";
-      }
-    }
-
-    // Buat elemen viewer
-    if (viewType === "image") {
-      const img = document.createElement("img");
-      img.src = viewSrc;
-      img.alt = title;
-      img.className = "w-full h-full object-contain";
-      body.appendChild(img);
-    } else if (viewType === "pdf") {
-      const iframe = document.createElement("iframe");
-      iframe.src = viewSrc;
-      iframe.title = title;
-      iframe.className = "w-full h-full";
-      iframe.setAttribute("loading", "eager");
-      body.appendChild(iframe);
-    } else {
-      // fallback: tampilkan tombol unduh
-      const wrap = document.createElement("div");
-      wrap.className = "w-full h-full flex items-center justify-center";
-      wrap.innerHTML = `
-        <a href="${viewSrc}" download class="px-4 py-2 rounded-lg bg-indigo-600 text-white">Unduh Dokumen</a>
-      `;
-      body.appendChild(wrap);
-    }
-
-    // Update judul
-    titleEl.textContent = title;
-
-    // Tampilkan modal & sembunyikan daftar
-    backdrop.classList.remove("hidden");
-    modal.classList.remove("hidden");
-    document.body.style.overflow = "hidden";
-    if (listCard) listCard.classList.add("hidden");
-
-    // Event tutup
-    const close = () => closeViewer();
-    document.getElementById("viewer-close").onclick = close;
-    backdrop.onclick = close;
-
-    // ESC untuk menutup
-    window.addEventListener("keydown", onEscClose);
-  } catch (err) {
-    console.error(err);
-    showToast("Tidak dapat menampilkan dokumen.", "error");
-  }
-}
-
-function closeViewer() {
-  const backdrop = document.getElementById("viewer-backdrop");
-  const modal = document.getElementById("viewer-modal");
-  const body = document.getElementById("viewer-body");
-  const listCard = document.getElementById("submissions-card");
-
-  backdrop.classList.add("hidden");
-  modal.classList.add("hidden");
-  document.body.style.overflow = "";
-  if (listCard) listCard.classList.remove("hidden");
-
-  body.innerHTML = "";
-  if (currentObjectURL) {
-    URL.revokeObjectURL(currentObjectURL);
-    currentObjectURL = null;
-  }
-  window.removeEventListener("keydown", onEscClose);
-}
-
-function onEscClose(e) {
-  if (e.key === "Escape") closeViewer();
-         }
-
-
-
-// === Ripple for submit button ===
-(function attachSubmitRipple(){
-  try{
-    const btn = document.getElementById("submit-btn");
-    if(!btn) return;
-    btn.addEventListener("pointerdown", (e)=>{
-      const rect = btn.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      const ripple = document.createElement("span");
-      ripple.className = "btn-ripple";
-      ripple.style.left = x + "px";
-      ripple.style.top = y + "px";
-      btn.appendChild(ripple);
-      setTimeout(()=>{ ripple.remove(); }, 700);
-    }, {passive:true});
-  }catch(err){ console.warn("Ripple attach failed:", err); }
-})();
-
-
-// === Reveal submissions card when a folder is selected ===
-function showSubmissionsCard(folderLabel = "") {
-  const card = document.getElementById("submissions-card");
-  if (card) card.classList.remove("hidden");
-  const heading = card ? card.querySelector("h2.section-header") : null;
-  if (heading) {
-    heading.textContent = folderLabel && folderLabel !== "SEMUA"
-      ? `📊 Daftar Pengajuan — ${folderLabel}`
-      : "📊 Daftar Pengajuan";
-  }
-}
